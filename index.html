@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Éditeur de partition ABC</title>
+<meta name="description" content="Écrivez de petites partitions au doigt ou à la souris.">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#2f4bff">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Partition">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{--pg-bg:#dfe5f2;--pg-ink:#1b2438;--pg-ink2:#4d5873;--pg-line:#c5cee2;--pg-accent:#2f4bff}
+@media (prefers-color-scheme:dark){:root{--pg-bg:#0f1424;--pg-ink:#e6ebf7;--pg-ink2:#a4aecb;--pg-line:#38425d;--pg-accent:#8ea0ff}}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;min-height:100vh;background:var(--pg-bg);color:var(--pg-ink);font:15px/1.45 "Atkinson Hyperlegible",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overscroll-behavior:none;
+ padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)}
+main{max-width:1180px;margin:0 auto;padding:8px 8px 24px}
+header{display:flex;align-items:center;gap:10px;min-height:36px;padding:0 4px 6px}
+h1{margin:0;font-size:16px;letter-spacing:.005em;flex:1}
+#install{appearance:none;border:1px solid var(--pg-accent);background:var(--pg-accent);color:#fff;border-radius:9px;height:32px;padding:0 12px;font:inherit;font-size:13px;font-weight:700;cursor:pointer}
+#install[hidden],#ios[hidden],#fail[hidden]{display:none}
+#ios,#fail{margin:0 4px 8px;padding:8px 12px;border:1px solid var(--pg-line);border-radius:10px;font-size:13px;color:var(--pg-ink2)}
+#fail{color:#b42318;border-color:#b42318}
+@media (display-mode:standalone){#install,#ios{display:none}}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Éditeur de partition</h1>
+    <button id="install" type="button" hidden>Installer l'app</button>
+  </header>
+  <p id="ios" hidden>Pour installer l'app : touchez <strong>Partager</strong> puis <strong>Sur l'écran d'accueil</strong>.</p>
+  <p id="fail" hidden>Le moteur de rendu (abcjs) n'a pas pu être chargé. Connectez-vous à Internet une première fois : il sera ensuite conservé pour le mode hors ligne.</p>
+  <div id="partition"></div>
+</main>
+
+<script>
+(function () {
+  var ABCJS_LOCAL = 'vendor/abcjs-basic-min.js';
+  var ABCJS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/abcjs/6.5.2/abcjs-basic-min.js';
+  var KEY = 'partition-abc:v1';
+
+  function load(src, ok, ko) {
+    var s = document.createElement('script');
+    s.src = src; s.onload = ok; s.onerror = function () { s.remove(); ko && ko(); };
+    document.head.appendChild(s);
+  }
+  function fail() { document.getElementById('fail').hidden = false; }
+
+  function start() {
+    var saved = null;
+    try { saved = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch (e) { saved = null; }
+    var ed;
+    try { ed = new ScoreEditor('#partition', { clef: 'grand', measures: 4, key: 'C', meter: [4, 4], tempo: 72, data: saved }); }
+    catch (e) { ed = new ScoreEditor('#partition', { clef: 'grand', measures: 4, key: 'C', meter: [4, 4], tempo: 72 }); }
+    // sauvegarde automatique sur l'appareil
+    var t = null;
+    function save() { try { localStorage.setItem(KEY, JSON.stringify(ed.toJSON())); } catch (e) { /* stockage plein ou interdit */ } }
+    ed.on('change', function () { clearTimeout(t); t = setTimeout(save, 400); });
+    document.addEventListener('visibilitychange', function () { if (document.hidden) save(); });
+    window.addEventListener('pagehide', save);
+    window.ed = ed;
+  }
+
+  load(ABCJS_LOCAL, function () { load('abc-score-editor.js', start, fail); }, function () {
+    load(ABCJS_CDN, function () { load('abc-score-editor.js', start, fail); }, fail);
+  });
+
+  // installation
+  var deferred = null, btn = document.getElementById('install');
+  window.addEventListener('beforeinstallprompt', function (e) { e.preventDefault(); deferred = e; btn.hidden = false; });
+  btn.addEventListener('click', function () { if (!deferred) return; deferred.prompt(); deferred.userChoice.then(function () { deferred = null; btn.hidden = true; }); });
+  window.addEventListener('appinstalled', function () { btn.hidden = true; });
+  var ua = navigator.userAgent, ios = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  if (ios && !navigator.standalone) document.getElementById('ios').hidden = false;
+
+  if ('serviceWorker' in navigator) window.addEventListener('load', function () { navigator.serviceWorker.register('sw.js').catch(function () {}); });
+})();
+</script>
+</body>
+</html>

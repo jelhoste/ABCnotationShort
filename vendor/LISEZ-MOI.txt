@@ -1,0 +1,11 @@
+OPTIONNEL — démarrage 100 % hors ligne dès la première ouverture
+
+Par défaut, l'application charge abcjs depuis le CDN cdnjs lors du premier lancement,
+puis le garde en cache pour fonctionner hors ligne.
+
+Pour ne dépendre d'aucun serveur externe :
+1. Téléchargez  https://cdnjs.cloudflare.com/ajax/libs/abcjs/6.5.2/abcjs-basic-min.js
+2. Enregistrez-le dans ce dossier sous le nom  abcjs-basic-min.js
+3. Republiez le dossier (et augmentez VERSION dans sw.js).
+
+L'application utilise ce fichier local en priorité, et le CDN seulement s'il est absent.
