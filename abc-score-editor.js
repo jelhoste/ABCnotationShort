@@ -317,7 +317,8 @@ function fixEvent(e) {
     dur: ALLOWED.indexOf(e.dur) >= 0 ? e.dur : 4,
     pitches: kind === 'note' ? pitches : [],
     chord: e.chord || '', text: e.text || '', textPos: e.textPos === 'below' ? 'below' : 'above',
-    color: e.color || ''
+    color: e.color || '',
+    tie: kind === 'note' && !!e.tie, sOpen: kind === 'note' ? (e.sOpen | 0) : 0, sClose: kind === 'note' ? (e.sClose | 0) : 0
   };
 }
 
@@ -377,7 +378,20 @@ function accidental(p, st, ka) {
   return p.alt === 0 ? '=' : p.alt === 1 ? '^' : p.alt === 2 ? '^^' : p.alt === -1 ? '_' : '__';
 }
 
-function measureABC(clef, evs, beat, ka, fifthsUnused) {
+/** Liaisons d'expression valides d'une portée (ouvertures/fermetures appariées, dans l'ordre du temps). */
+function liaisons(stv) {
+  const open = {}, close = {}, stack = [];
+  stv.measures.forEach((m) => m.forEach((e) => {
+    if (e.kind !== 'note') return;
+    let c = e.sClose | 0;
+    while (c-- > 0 && stack.length) { const o = stack.pop(); open[o] = (open[o] || 0) + 1; close[e.id] = (close[e.id] || 0) + 1; }
+    let n = e.sOpen | 0;
+    while (n-- > 0) stack.push(e.id);
+  }));
+  return { open, close };
+}
+
+function measureABC(clef, evs, beat, ka, lia) {
   const st = {};
   let pos = 0, prevBeam = false, prevBeatIdx = -1, out = '';
   evs.forEach((e, i) => {
@@ -389,8 +403,9 @@ function measureABC(clef, evs, beat, ka, fifthsUnused) {
     else if (e.kind === 'slash') s += (clef === 'bass' ? 'D,' : 'B') + dn;
     else {
       const ps = e.pitches.slice().sort((a, b) => midiOf(a) - midiOf(b));
-      if (ps.length === 1) s += accidental(ps[0], st, ka) + abcPitch(ps[0]) + dn;
-      else s += '[' + ps.map((p) => accidental(p, st, ka) + abcPitch(p)).join('') + ']' + dn;
+      const o = '('.repeat((lia && lia.open[e.id]) || 0), c = ')'.repeat((lia && lia.close[e.id]) || 0), tie = e.tie ? '-' : '';
+      if (ps.length === 1) s += o + accidental(ps[0], st, ka) + abcPitch(ps[0]) + dn + tie + c;
+      else s += o + '[' + ps.map((p) => accidental(p, st, ka) + abcPitch(p)).join('') + ']' + dn + tie + c;
     }
     const beamable = e.kind === 'note' && e.dur <= 2 && (pos % beat) + e.dur <= beat;
     const bi = Math.floor(pos / beat);
@@ -416,12 +431,12 @@ function buildABC(S, opts) {
   if (nst > 1) {
     L.push('%%score {1 2}', 'V:1 clef=' + S.staves[0].clef, 'V:2 clef=' + S.staves[1].clef, 'K:' + S.key);
   } else L.push('K:' + S.key + ' clef=' + S.staves[0].clef);
-  const nm = S.staves[0].measures.length;
+  const nm = S.staves[0].measures.length, LIA = S.staves.map(liaisons);
   for (let start = 0; start < nm; start += perLine) {
     const end = Math.min(nm, start + perLine);
     S.staves.forEach((stv, si) => {
       const parts = [];
-      for (let m = start; m < end; m++) parts.push(measureABC(stv.clef, stv.measures[m], beat, ka));
+      for (let m = start; m < end; m++) parts.push(measureABC(stv.clef, stv.measures[m], beat, ka, LIA[si]));
       L.push((nst > 1 ? '[V:' + (si + 1) + '] ' : '') + parts.join(' | ') + (end === nm ? ' |]' : ' |'));
     });
   }
@@ -700,7 +715,7 @@ class ScoreEditor {
           const r = mergeRestRun(f.m, f.ei, cap); f.m.splice(0, f.m.length, ...r); return;
         }
         if (e.kind === 'note' && !g.whole && g.n && g.n < e.pitches.length) { e.pitches = e.pitches.filter((p) => !g.ps[p.id]); return; }
-        e.kind = 'rest'; e.pitches = []; e.color = '';
+        e.kind = 'rest'; e.pitches = []; e.color = ''; e.tie = false; e.sOpen = 0; e.sClose = 0;
       });
       this.sel = [];
     });
@@ -893,10 +908,37 @@ class ScoreEditor {
             const dm = midiOf(b[k]) - midiOf(a[k]), dd = diaOf(b[k]) - diaOf(a[k]);
             const label = (opts.labels === false || (opts.labels !== true && a.length > 2)) ? '' : (dm === 0 ? '=' : (dd > 0 ? '↑' : '↓') + intervalName(Math.min(7, Math.abs(dd) + 1)));
             const c = dm === 0 ? MOVE_COLORS.common : (a[k].color || (Math.abs(dm) <= 2 ? MOVE_COLORS.step : Math.abs(dm) <= 4 ? MOVE_COLORS.third : MOVE_COLORS.leap));
-            this.S.arrows.push({ id: uid('a'), from: { e: evs[i - 1].id, p: a[k].id }, to: { e: evs[i].id, p: b[k].id }, color: c, label, curve: dm === 0 ? 0 : (dm > 0 ? 1 : -1), dashed: dm === 0, auto: true });
+            this.S.arrows.push({ id: uid('a'), from: { e: evs[i - 1].id, p: a[k].id }, to: { e: evs[i].id, p: b[k].id }, color: c, label, curve: opts.curve != null ? (opts.curve === 0 ? 0 : opts.curve < 0 ? -1 : 1) : (dm === 0 ? 0 : (dm > 0 ? 1 : -1)), dashed: dm === 0, auto: true });
           }
         }
       });
+    });
+  }
+
+  /* ---------- liaisons ---------- */
+  /**
+   * Bascule une liaison sur les notes sélectionnées :
+   *  - une note (ou deux notes consécutives) de même hauteur → liaison de prolongation ;
+   *  - sinon → liaison d'expression (legato) de la première à la dernière note sélectionnée.
+   * Avec une seule note sélectionnée, la liaison va vers la note suivante.
+   */
+  toggleLiaison(target) {
+    const ts = this._uniqueEvents(target).filter((x) => x.ev.kind === 'note');
+    if (!ts.length) { this._toast('Sélectionnez au moins une note pour créer une liaison.'); return false; }
+    const si = ts[0].si;
+    if (ts.some((x) => x.si !== si)) { this._toast('Une liaison relie des notes d\'une même portée.'); return false; }
+    const flat = [];
+    this.S.staves[si].measures.forEach((m) => m.forEach((e) => flat.push(e)));
+    const idx = ts.map((x) => flat.indexOf(x.ev)).sort((a, b) => a - b);
+    const a = idx[0], b = idx.length === 1 ? a + 1 : idx[idx.length - 1];
+    const A = flat[a], B = flat[b];
+    if (!B || B.kind !== 'note') { this._toast('Pas de note suivante à relier.'); return false; }
+    const same = A.pitches.some((p) => B.pitches.some((q) => q.step === p.step && q.alt === p.alt && q.oct === p.oct));
+    const adjacent = b === a + 1;
+    return this._mutate('liaison', () => {
+      if (adjacent && same && (idx.length <= 2)) A.tie = !A.tie;
+      else if ((A.sOpen | 0) > 0 && (B.sClose | 0) > 0) { A.sOpen--; B.sClose--; }
+      else { A.sOpen = (A.sOpen | 0) + 1; B.sClose = (B.sClose | 0) + 1; }
     });
   }
 
@@ -994,6 +1036,7 @@ font:13px/1.35 "Atkinson Hyperlegible",system-ui,-apple-system,"Segoe UI",Roboto
 .se-cyc.se-on{background:var(--se-accent);border-color:var(--se-accent);color:var(--se-accent-ink)}
 .se-cycm{opacity:.5;font-size:10px;margin-left:auto;padding-left:4px}
 .se-cyc svg{flex:none}
+.se-hold{user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;touch-action:manipulation}
 .se-seg{display:inline-flex}
 .se-seg .se-btn{border-radius:0;margin-left:-1px}
 .se-seg .se-btn:first-child{border-radius:9px 0 0 9px;margin-left:0}
@@ -1105,31 +1148,45 @@ Object.assign(ScoreEditor.prototype, {
     C.meter = h('select', { class: 'se-select', 'aria-label': 'Mesure', onchange: (e) => { const [n, d] = e.target.value.split('/').map(Number); self.setMeter(n, d); } },
       METERS.map((m) => h('option', { value: m[0] + '/' + m[1] }, m[0] + '/' + m[1])));
     C.count = h('span', { class: 'se-glabel', style: 'min-width:5.5em;text-align:center' });
-    const durCyc = cyc({ title: 'Durée de la prochaine note', w: '7.6em',
-      items: [16, 8, 4, 2, 1].map((d) => ({ v: d, html: durIcon(d), l: ' ' + DUR_NAME[d][0].toUpperCase() + DUR_NAME[d].slice(1) })), get: () => self.dur, set: (v) => self.setInputDur(v) });
+    C.dur = h('select', { class: 'se-select', 'aria-label': 'Durée de la prochaine note', title: 'Durée de la prochaine note', onchange: (e) => self.setInputDur(Number(e.target.value)) },
+      [16, 8, 4, 2, 1].map((d) => h('option', { value: d }, DUR_NAME[d][0].toUpperCase() + DUR_NAME[d].slice(1))));
     C.dot = tog('dot', '•', 'Pointée (ajoute la moitié de la durée)', () => self.setInputDotted(!self.dotted));
     const modeCyc = cyc({ title: 'Mode de saisie', w: '7.4em', items: [{ v: 'write', l: 'Écrire' }, { v: 'select', l: 'Sélectionner' }], get: () => self.mode, set: (v) => self.setMode(v), on: (v) => v === 'select' });
     const kindCyc = cyc({ title: 'Type de saisie', w: '5.4em', items: [{ v: 'note', l: 'Note' }, { v: 'slash', l: 'Slash /' }], get: () => self.kind, set: (v) => self.setKind(v), on: (v) => v === 'slash' });
     const accCyc = cyc({ title: 'Altération de la prochaine note', w: '4.6em', items: [{ v: 'auto', l: 'auto' }, { v: -1, l: '♭' }, { v: 0, l: '♮' }, { v: 1, l: '♯' }], get: () => self.acc, set: (v) => self.setAcc(v), on: (v) => v !== 'auto' });
-    C.multi = tog('multi', 'Sélection multiple', 'Ajouter à la sélection (ou Maj/Ctrl + clic)', () => { self.multi = !self.multi; self._updateUI(); });
-    C.confirmB = tog('confirmB', 'Confirmer avant d\'écrire', 'Un premier toucher prévisualise la note, un second la valide', () => { self.confirm = !self.confirm; if (!self.confirm) self._setPending(null); self._updateUI(); });
+    C.tie = h('button', { type: 'button', class: 'se-btn se-icon', title: 'Liaison : relie les notes sélectionnées (prolongation si même hauteur, sinon liaison d\'expression)', 'aria-label': 'Liaison', onclick: () => self.toggleLiaison(),
+      html: '<svg viewBox="0 0 24 14" width="20" height="12" aria-hidden="true"><path d="M2 2.5Q12 15 22 2.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>' });
+    C.multi = tog('multi', 'SélMul', 'Sélection multiple : ajouter à la sélection (ou Maj/Ctrl + clic)', () => { self.multi = !self.multi; self._updateUI(); });
+    C.confirmB = tog('confirmB', 'Conf', 'Confirmer avant d\'écrire : un premier toucher prévisualise la note, un second la valide', () => { self.confirm = !self.confirm; if (!self.confirm) self._setPending(null); self._updateUI(); });
+    // bouton à appui court / appui long
+    const hold = (label, title, shortFn, longFn) => {
+      let timer = null, fired = false;
+      const stop = () => clearTimeout(timer);
+      return h('button', { type: 'button', class: 'se-btn se-icon se-hold', title, 'aria-label': title,
+        onpointerdown: () => { fired = false; stop(); timer = setTimeout(() => { fired = true; longFn(); if (root.navigator && root.navigator.vibrate) root.navigator.vibrate(15); }, 450); },
+        onpointerup: stop, onpointerleave: stop, onpointercancel: stop, oncontextmenu: (e) => e.preventDefault(),
+        onclick: () => { if (fired) { fired = false; return; } shortFn(); } }, label);
+    };
+    // flèche entre deux notes (libellé, forme) — la forme sert aussi aux flèches automatiques
+    C.alabel = h('input', { class: 'se-input', type: 'text', placeholder: 'libellé (option)', 'aria-label': 'Libellé de la flèche', size: 12 });
+    C.acurve = h('select', { class: 'se-select', 'aria-label': 'Forme de la flèche' }, h('option', { value: '0' }, 'Droit'), h('option', { value: '1' }, 'Courbe h'), h('option', { value: '-1' }, 'Courbe b'));
 
     this.pen = this.o.pen || '';
     const PEN_NAMES = ['Soprano', 'Alto', 'Ténor', 'Basse'];
     C.pens = VOICE_COLORS.map((c, i) => { const b = h('button', { type: 'button', class: 'se-swatch', title: PEN_NAMES[i] + ' : couleur des prochaines notes (et de la sélection)', 'aria-label': PEN_NAMES[i], style: 'background:' + c, 'aria-pressed': 'false', onclick: () => self.setPen(self.pen === c ? '' : c) }); b.dataset.c = c; return b; });
     const writeP = h('div', { class: 'se-panel', role: 'tabpanel' },
-      group('Portée', clefCyc, C.key, C.meter),
-      group('Mesures', seg([btn('−', 'Retirer la dernière mesure', () => self.removeMeasure(), 'se-icon'), h('span', { class: 'se-btn', style: 'pointer-events:none;border-radius:0;margin-left:-1px' }, C.count), btn('+', 'Ajouter une mesure', () => self.addMeasure(), 'se-icon')])),
-      group('Durée', durCyc, C.dot),
+      group('Durée', C.dur, C.dot, C.tie),
       group('Type', kindCyc),
       group('Altération', accCyc),
       group('Mode', modeCyc),
       group('Couleur', h('div', { class: 'se-row' }, C.pens)),
-      group('Sélection', C.multi, C.confirmB, btn('Tout', 'Tout sélectionner', () => self.selectAll())),
-      group('Transposer la sélection',
-        seg([btn('▼ ½ ton', 'Un demi-ton plus bas', () => self.transpose(-1)), btn('▲ ½ ton', 'Un demi-ton plus haut', () => self.transpose(1))]),
-        seg([btn('▼ 8ve', 'Une octave plus bas', () => self.transpose(-12)), btn('▲ 8ve', 'Une octave plus haut', () => self.transpose(12))])),
-      group('Modifier', btn('Appliquer la durée', 'Donne la durée choisie aux éléments sélectionnés', () => self.setDuration(self.dur, self.dotted)), btn('Vider la mesure', 'Efface toute la mesure de la sélection', () => { const t = self._targets()[0]; if (t) self.clearMeasure(t.mi); })));
+      group('Sélection', C.multi, C.confirmB, btn('Tout', 'Tout sélectionner', () => self.selectAll()), btn('∅', 'Tout désélectionner', () => self.clearSelection(), 'se-icon')),
+      group('Transposer',
+        hold('▼', 'Clic court : un demi-ton plus bas · clic long : une octave plus bas', () => self.transpose(-1), () => self.transpose(-12)),
+        hold('▲', 'Clic court : un demi-ton plus haut · clic long : une octave plus haut', () => self.transpose(1), () => self.transpose(12))),
+      group('Modifier', btn('Appliquer la durée', 'Donne la durée choisie aux éléments sélectionnés', () => self.setDuration(self.dur, self.dotted)), btn('Vider la mesure', 'Efface toute la mesure de la sélection', () => { const t = self._targets()[0]; if (t) self.clearMeasure(t.mi); })),
+      group('Flèche entre deux notes', C.alabel, C.acurve,
+        btn('Relier →', 'Sélection multiple : choisissez la note de départ puis celle d\'arrivée', () => self.arrowFromSelection({ label: C.alabel.value, curve: Number(C.acurve.value), color: self.pick || self.pen || '#495057' }), 'se-primary')));
 
     /* --- onglet Accords & texte --- */
     C.chord = h('input', { class: 'se-input', type: 'text', placeholder: 'Cmaj7, Dm7, G7/B…', 'aria-label': 'Symbole d\'accord', size: 14, onkeydown: (e) => { if (e.key === 'Enter') self.setChord(e.target.value); } });
@@ -1149,14 +1206,10 @@ Object.assign(ScoreEditor.prototype, {
     this.pick = '';
     C.swatches = PALETTE.map((p) => { const b = h('button', { type: 'button', class: 'se-swatch', title: p.n, 'aria-label': p.n, style: 'background:' + p.c, 'aria-pressed': 'false', onclick: () => { self.pick = p.c; self.setColor(p.c); self._updateUI(); } }); b.dataset.c = p.c; return b; });
     C.swNone = h('button', { type: 'button', class: 'se-swatch se-none', title: 'Sans couleur', 'aria-label': 'Sans couleur', onclick: () => { self.pick = ''; self.setColor(''); self._updateUI(); } });
-    C.alabel = h('input', { class: 'se-input', type: 'text', placeholder: 'ex. voix commune, +2…', 'aria-label': 'Libellé de la flèche', size: 18 });
-    C.acurve = h('select', { class: 'se-select', 'aria-label': 'Forme de la flèche' }, h('option', { value: '1' }, 'Courbe vers le haut'), h('option', { value: '0' }, 'Droite'), h('option', { value: '-1' }, 'Courbe vers le bas'));
     const voiceP = h('div', { class: 'se-panel', role: 'tabpanel', hidden: true },
       group('Colorer la sélection', h('div', { class: 'se-row' }, C.swatches, C.swNone)),
       group('Colorations automatiques', btn('Par voix (S · A · T · B)', 'Une couleur par voix', () => self.colorByVoice()), btn('Par mouvement', 'Note commune, conjoint, tierce, saut', () => self.colorByMotion()), btn('Effacer les couleurs', 'Retirer toutes les couleurs', () => self.clearColors(), 'se-danger')),
-      group('Flèche entre deux notes', C.alabel, C.acurve,
-        btn('Relier les 2 notes sélectionnées →', 'Sélection multiple : choisissez la note de départ puis celle d\'arrivée', () => self.arrowFromSelection({ label: C.alabel.value, curve: Number(C.acurve.value), color: self.pick || '#495057' }), 'se-primary')),
-      group('Flèches automatiques', btn('Une flèche par voix', 'Relie chaque voix d\'un accord au suivant, avec l\'intervalle', () => self.autoArrows()), btn('Retirer (sélection)', 'Retire les flèches des notes sélectionnées', () => self.removeArrows('selection')), btn('Tout retirer', 'Retire toutes les flèches', () => self.removeArrows('all'), 'se-danger')),
+      group('Flèches automatiques', btn('Une flèche par voix', 'Relie chaque voix d\'un accord au suivant (forme choisie dans l\'onglet Écrire : droit / courbe)', () => self.autoArrows({ curve: Number(C.acurve.value) })), btn('Retirer (sélection)', 'Retire les flèches des notes sélectionnées', () => self.removeArrows('selection')), btn('Tout retirer', 'Retire toutes les flèches', () => self.removeArrows('all'), 'se-danger')),
       h('div', { class: 'se-legend' },
         [['Soprano', VOICE_COLORS[0]], ['Alto', VOICE_COLORS[1]], ['Ténor', VOICE_COLORS[2]], ['Basse', VOICE_COLORS[3]]].map(([n, c]) => h('span', null, h('i', { style: 'background:' + c }), n)),
         [['note commune', MOVE_COLORS.common], ['conjoint', MOVE_COLORS.step], ['tierce / quarte', MOVE_COLORS.third], ['grand saut', MOVE_COLORS.leap]].map(([n, c]) => h('span', null, h('i', { style: 'background:' + c }), n))));
@@ -1165,11 +1218,13 @@ Object.assign(ScoreEditor.prototype, {
     C.title = h('input', { class: 'se-input', type: 'text', placeholder: 'Titre (optionnel)', 'aria-label': 'Titre', size: 22, onchange: (e) => self.setTitle(e.target.value) });
     C.tempo = h('input', { class: 'se-input', type: 'number', min: 30, max: 240, step: 2, 'aria-label': 'Tempo', style: 'width:5.5em', onchange: (e) => self.setTempo(e.target.value) });
     C.zoom = h('select', { class: 'se-select', 'aria-label': 'Taille de la partition', onchange: (e) => { self.scale = Number(e.target.value); self.render(); } },
-      [['1.0', 'Petite'], ['1.35', 'Moyenne'], ['1.7', 'Grande'], ['2.1', 'Très grande']].map(([v, l]) => h('option', { value: v }, l)));
+      [['0.8', 'Très petite'], ['1', 'Petite'], ['1.35', 'Moyenne'], ['1.7', 'Grande'], ['2.1', 'Très grande']].map(([v, l]) => h('option', { value: v }, l)));
     C.perLine = h('select', { class: 'se-select', 'aria-label': 'Mesures par ligne', onchange: (e) => { self.o.perLine = e.target.value === 'auto' ? 'auto' : Number(e.target.value); self.render(); } },
       h('option', { value: 'auto' }, 'Automatique'), [1, 2, 3, 4, 5, 6, 8].map((n) => h('option', { value: n }, n)));
     C.bars = tog('bars', 'N° de mesure', 'Afficher les numéros de mesure', () => self.setBarNumbers(!self.S.barNumbers));
     const fileP = h('div', { class: 'se-panel', role: 'tabpanel', hidden: true },
+      group('Portée', clefCyc, C.key, C.meter),
+      group('Mesures', seg([btn('−', 'Retirer la dernière mesure', () => self.removeMeasure(), 'se-icon'), h('span', { class: 'se-btn', style: 'pointer-events:none;border-radius:0;margin-left:-1px' }, C.count), btn('+', 'Ajouter une mesure', () => self.addMeasure(), 'se-icon')])),
       group('Partition', C.title, btn('Nouvelle partition', 'Repartir de zéro', () => { if (root.confirm ? root.confirm('Effacer la partition actuelle ?') : true) self.reset(); }, 'se-danger')),
       group('Affichage', C.zoom, C.perLine, C.bars),
       group('Lecture', h('span', { class: 'se-glabel' }, 'Tempo (noire)'), C.tempo, btn('▶ Écouter', 'Lire la partition', () => self.togglePlay(), 'se-primary')),
@@ -1222,7 +1277,8 @@ Object.assign(ScoreEditor.prototype, {
       C.bars.setAttribute('aria-pressed', String(!!S.barNumbers));
       if (root.document.activeElement !== C.title) C.title.value = S.title || '';
       if (root.document.activeElement !== C.tempo) C.tempo.value = S.tempo;
-      C.zoom.value = String(this.scale); if (!C.zoom.value) C.zoom.value = '1.35';
+      { const zs = [].map.call(C.zoom.options, (o) => Number(o.value)); C.zoom.value = String(zs.reduce((a, b) => (Math.abs(b - this.scale) < Math.abs(a - this.scale) ? b : a))); }
+      C.dur.value = String(this.dur);
       C.perLine.value = String(this.o.perLine);
       C.undo.disabled = !this.undoS.length; C.redo.disabled = !this.redoS.length;
       const hasSel = this.sel.length > 0;
