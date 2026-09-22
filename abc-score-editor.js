@@ -210,7 +210,7 @@ function nameChord(pitches) {
  * 3. DURÉES, SILENCES, MESURES
  * ===================================================================== */
 const largestAllowed = (n) => ALLOWED.find((d) => d <= n) || 0;
-const newRest = (dur) => ({ id: uid('e'), kind: 'rest', dur, pitches: [], chord: '', text: '', textPos: 'above', color: '' });
+const newRest = (dur) => ({ id: uid('e'), kind: 'rest', dur, pitches: [], chord: '', text: '', textPos: 'above', color: '', mute: false });
 
 /** Décompose une durée vide en silences alignés (mesure vide = un seul silence). */
 function splitRests(start, len, cap) {
@@ -318,7 +318,8 @@ function fixEvent(e) {
     pitches: kind === 'note' ? pitches : [],
     chord: e.chord || '', text: e.text || '', textPos: e.textPos === 'below' ? 'below' : 'above',
     color: e.color || '',
-    tie: kind === 'note' && !!e.tie, sOpen: kind === 'note' ? (e.sOpen | 0) : 0, sClose: kind === 'note' ? (e.sClose | 0) : 0
+    tie: kind === 'note' && !!e.tie, sOpen: kind === 'note' ? (e.sOpen | 0) : 0, sClose: kind === 'note' ? (e.sClose | 0) : 0,
+    mute: kind === 'slash' && !!e.mute
   };
 }
 
@@ -480,7 +481,17 @@ function toPitchObj(p) {
   if (typeof p === 'string') { const q = parsePitch(p); if (!q) throw new Error('Hauteur invalide : ' + p); return q; }
   return mkPitch(p.step, p.alt, p.oct, p.color);
 }
-const intervalName = (n) => ({ 1: '2de', 2: '3ce', 3: '4te', 4: '5te', 5: '6te', 6: '7e', 7: '8ve' }[n] || n + 'x');
+// Nom d'intervalle à partir du nombre de demi-tons (indépendant de l'orthographe des notes) : 4 demi-tons = toujours « 3ce M ».
+const IV_NAMES = ['unisson', '2de m', '2de M', '3ce m', '3ce M', '4te', 'triton', '5te', '6te m', '6te M', '7e m', '7e M'];
+function intervalLabel(semi) {
+  const a = Math.abs(semi);
+  if (a === 0) return '=';
+  const oct = Math.floor(a / 12), r = a % 12;
+  let name = r === 0 && oct > 0 ? '8ve' : IV_NAMES[r];
+  if (oct > 0 && r !== 0) name += ' +' + oct + '8ve';
+  else if (oct > 1) name += '×' + oct;
+  return (semi > 0 ? '↑' : '↓') + name;
+}
 
 class ScoreEditor {
   constructor(target, opts) {
@@ -691,6 +702,7 @@ class ScoreEditor {
       if (spec.text != null) ev.text = String(spec.text);
       if (spec.textPos) ev.textPos = spec.textPos === 'below' ? 'below' : 'above';
       if (spec.color) { ev.pitches.forEach((p) => { p.color = spec.color; }); ev.color = spec.color; }
+      if (kind === 'slash' && spec.mute != null) ev.mute = !!spec.mute;
       id = ev.id;
     });
     return ok === false ? null : id;
@@ -905,8 +917,8 @@ class ScoreEditor {
           const b = evs[i].pitches.slice().sort((x, y) => midiOf(y) - midiOf(x));
           if (a.length !== b.length) continue;
           for (let k = 0; k < a.length; k++) {
-            const dm = midiOf(b[k]) - midiOf(a[k]), dd = diaOf(b[k]) - diaOf(a[k]);
-            const label = (opts.labels === false || (opts.labels !== true && a.length > 2)) ? '' : (dm === 0 ? '=' : (dd > 0 ? '↑' : '↓') + intervalName(Math.min(7, Math.abs(dd) + 1)));
+            const dm = midiOf(b[k]) - midiOf(a[k]);
+            const label = opts.labels === false ? '' : intervalLabel(dm);
             const c = dm === 0 ? MOVE_COLORS.common : (a[k].color || (Math.abs(dm) <= 2 ? MOVE_COLORS.step : Math.abs(dm) <= 4 ? MOVE_COLORS.third : MOVE_COLORS.leap));
             this.S.arrows.push({ id: uid('a'), from: { e: evs[i - 1].id, p: a[k].id }, to: { e: evs[i].id, p: b[k].id }, color: c, label, curve: opts.curve != null ? (opts.curve === 0 ? 0 : opts.curve < 0 ? -1 : 1) : (dm === 0 ? 0 : (dm > 0 ? 1 : -1)), dashed: dm === 0, auto: true });
           }
@@ -933,7 +945,10 @@ class ScoreEditor {
     const a = idx[0], b = idx.length === 1 ? a + 1 : idx[idx.length - 1];
     const A = flat[a], B = flat[b];
     if (!B || B.kind !== 'note') { this._toast('Pas de note suivante à relier.'); return false; }
-    const same = A.pitches.some((p) => B.pitches.some((q) => q.step === p.step && q.alt === p.alt && q.oct === p.oct));
+    const same = A.pitches.length === B.pitches.length
+      && A.pitches.every((p) => B.pitches.some((q) => q.step === p.step && q.alt === p.alt && q.oct === p.oct));
+    // une liaison de prolongation (tenue) exige exactement les mêmes notes des deux côtés ;
+    // sinon, même avec une note commune, c'est une liaison d'expression (legato) qui est créée.
     const adjacent = b === a + 1;
     return this._mutate('liaison', () => {
       if (adjacent && same && (idx.length <= 2)) A.tie = !A.tie;
@@ -964,6 +979,19 @@ class ScoreEditor {
   _autoPerLine(w) { return w < 430 ? 2 : w < 780 ? 3 : 4; }
   perLine(w) { return this.o.perLine === 'auto' ? this._autoPerLine(w || (this.$score && this.$score.clientWidth) || 800) : Math.max(1, parseInt(this.o.perLine, 10) || 4); }
   getABC(opts) { return buildABC(this.S, Object.assign({ perLine: this.perLine(), tempo: true }, opts || {})); }
+  _openPenPicker() {
+    const self = this;
+    const close = () => { modal.remove(); self.$root.focus(); };
+    const pick = (c) => { self.setPen(c); close(); };
+    const row = h('div', { class: 'se-row', style: 'flex-wrap:wrap;max-width:260px' },
+      PALETTE.map((p) => h('button', { type: 'button', class: 'se-swatch', title: p.n, 'aria-label': p.n, style: 'background:' + p.c, onclick: () => pick(p.c) })),
+      h('button', { type: 'button', class: 'se-swatch se-none', title: 'Sans couleur', 'aria-label': 'Sans couleur', onclick: () => pick('') }));
+    const modal = h('div', { class: 'se-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Couleur d\'écriture', onclick: (e) => { if (e.target === modal) close(); }, onkeydown: (e) => { if (e.key === 'Escape') close(); } },
+      h('div', { class: 'se-dlg', style: 'width:min(320px,92vw);gap:14px' },
+        h('div', { class: 'se-row', style: 'justify-content:space-between' }, h('h3', null, 'Couleur d\'écriture'), h('button', { type: 'button', class: 'se-btn se-icon', 'aria-label': 'Fermer', onclick: close }, '✕')),
+        row));
+    this.$root.append(modal);
+  }
   _toast(msg) { if (this.headless) return; this._msg = msg; if (this.$status) { this.$status.textContent = msg; this.$status.classList.add('se-warn'); clearTimeout(this._tt); this._tt = setTimeout(() => { this.$status.classList.remove('se-warn'); this._updateUI(); }, 3200); } }
 
   /** Viewer en lecture seule : ScoreEditor.render('#el', json, options) */
@@ -1153,6 +1181,8 @@ Object.assign(ScoreEditor.prototype, {
     C.dot = tog('dot', '•', 'Pointée (ajoute la moitié de la durée)', () => self.setInputDotted(!self.dotted));
     const modeCyc = cyc({ title: 'Mode de saisie', w: '7.4em', items: [{ v: 'write', l: 'Écrire' }, { v: 'select', l: 'Sélectionner' }], get: () => self.mode, set: (v) => self.setMode(v), on: (v) => v === 'select' });
     const kindCyc = cyc({ title: 'Type de saisie', w: '5.4em', items: [{ v: 'note', l: 'Note' }, { v: 'slash', l: 'Slash /' }], get: () => self.kind, set: (v) => self.setKind(v), on: (v) => v === 'slash' });
+    this.mute = false;
+    C.muteTog = tog('muteTog', 'Muet', 'Slash muet (noire pleine, sans hampe) : marque le temps visuellement, sans jouer de son à la lecture — s\'applique au prochain slash écrit', () => { self.mute = !self.mute; self._updateUI(); });
     const accCyc = cyc({ title: 'Altération de la prochaine note', w: '4.6em', items: [{ v: 'auto', l: 'auto' }, { v: -1, l: '♭' }, { v: 0, l: '♮' }, { v: 1, l: '♯' }], get: () => self.acc, set: (v) => self.setAcc(v), on: (v) => v !== 'auto' });
     C.tie = h('button', { type: 'button', class: 'se-btn se-icon', title: 'Liaison : relie les notes sélectionnées (prolongation si même hauteur, sinon liaison d\'expression)', 'aria-label': 'Liaison', onclick: () => self.toggleLiaison(),
       html: '<svg viewBox="0 0 24 14" width="20" height="12" aria-hidden="true"><path d="M2 2.5Q12 15 22 2.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>' });
@@ -1172,21 +1202,20 @@ Object.assign(ScoreEditor.prototype, {
     C.acurve = h('select', { class: 'se-select', 'aria-label': 'Forme de la flèche' }, h('option', { value: '0' }, 'Droit'), h('option', { value: '1' }, 'Courbe h'), h('option', { value: '-1' }, 'Courbe b'));
 
     this.pen = this.o.pen || '';
-    const PEN_NAMES = ['Soprano', 'Alto', 'Ténor', 'Basse'];
-    C.pens = VOICE_COLORS.map((c, i) => { const b = h('button', { type: 'button', class: 'se-swatch', title: PEN_NAMES[i] + ' : couleur des prochaines notes (et de la sélection)', 'aria-label': PEN_NAMES[i], style: 'background:' + c, 'aria-pressed': 'false', onclick: () => self.setPen(self.pen === c ? '' : c) }); b.dataset.c = c; return b; });
+    C.penBtn = h('button', { type: 'button', class: 'se-swatch', title: 'Couleur des prochaines notes — toucher pour choisir', 'aria-label': 'Couleur d\'écriture', onclick: () => self._openPenPicker() });
     const writeP = h('div', { class: 'se-panel', role: 'tabpanel' },
       group('Durée', C.dur, C.dot, C.tie),
-      group('Type', kindCyc),
+      group('Type', kindCyc, C.muteTog),
       group('Altération', accCyc),
       group('Mode', modeCyc),
-      group('Couleur', h('div', { class: 'se-row' }, C.pens)),
-      group('Sélection', C.multi, C.confirmB, btn('Tout', 'Tout sélectionner', () => self.selectAll()), btn('∅', 'Tout désélectionner', () => self.clearSelection(), 'se-icon')),
+      group('Couleur', C.penBtn),
       group('Transposer',
         hold('▼', 'Clic court : un demi-ton plus bas · clic long : une octave plus bas', () => self.transpose(-1), () => self.transpose(-12)),
         hold('▲', 'Clic court : un demi-ton plus haut · clic long : une octave plus haut', () => self.transpose(1), () => self.transpose(12))),
       group('Modifier', btn('Appliquer la durée', 'Donne la durée choisie aux éléments sélectionnés', () => self.setDuration(self.dur, self.dotted)), btn('Vider la mesure', 'Efface toute la mesure de la sélection', () => { const t = self._targets()[0]; if (t) self.clearMeasure(t.mi); })),
       group('Flèche entre deux notes', C.alabel, C.acurve,
-        btn('Relier →', 'Sélection multiple : choisissez la note de départ puis celle d\'arrivée', () => self.arrowFromSelection({ label: C.alabel.value, curve: Number(C.acurve.value), color: self.pick || self.pen || '#495057' }), 'se-primary')));
+        btn('Relier →', 'Sélection multiple : choisissez la note de départ puis celle d\'arrivée', () => self.arrowFromSelection({ label: C.alabel.value, curve: Number(C.acurve.value), color: self.pick || self.pen || '#495057' }), 'se-primary')),
+      group('Flèches automatiques', btn('Une flèche par voix', 'Relie chaque voix d\'un accord au suivant (forme choisie ci-dessus : droit / courbe)', () => self.autoArrows({ curve: Number(C.acurve.value) })), btn('Retirer (sélection)', 'Retire les flèches des notes sélectionnées', () => self.removeArrows('selection')), btn('Tout retirer', 'Retire toutes les flèches', () => self.removeArrows('all'), 'se-danger')));
 
     /* --- onglet Accords & texte --- */
     C.chord = h('input', { class: 'se-input', type: 'text', placeholder: 'Cmaj7, Dm7, G7/B…', 'aria-label': 'Symbole d\'accord', size: 14, onkeydown: (e) => { if (e.key === 'Enter') self.setChord(e.target.value); } });
@@ -1209,7 +1238,6 @@ Object.assign(ScoreEditor.prototype, {
     const voiceP = h('div', { class: 'se-panel', role: 'tabpanel', hidden: true },
       group('Colorer la sélection', h('div', { class: 'se-row' }, C.swatches, C.swNone)),
       group('Colorations automatiques', btn('Par voix (S · A · T · B)', 'Une couleur par voix', () => self.colorByVoice()), btn('Par mouvement', 'Note commune, conjoint, tierce, saut', () => self.colorByMotion()), btn('Effacer les couleurs', 'Retirer toutes les couleurs', () => self.clearColors(), 'se-danger')),
-      group('Flèches automatiques', btn('Une flèche par voix', 'Relie chaque voix d\'un accord au suivant (forme choisie dans l\'onglet Écrire : droit / courbe)', () => self.autoArrows({ curve: Number(C.acurve.value) })), btn('Retirer (sélection)', 'Retire les flèches des notes sélectionnées', () => self.removeArrows('selection')), btn('Tout retirer', 'Retire toutes les flèches', () => self.removeArrows('all'), 'se-danger')),
       h('div', { class: 'se-legend' },
         [['Soprano', VOICE_COLORS[0]], ['Alto', VOICE_COLORS[1]], ['Ténor', VOICE_COLORS[2]], ['Basse', VOICE_COLORS[3]]].map(([n, c]) => h('span', null, h('i', { style: 'background:' + c }), n)),
         [['note commune', MOVE_COLORS.common], ['conjoint', MOVE_COLORS.step], ['tierce / quarte', MOVE_COLORS.third], ['grand saut', MOVE_COLORS.leap]].map(([n, c]) => h('span', null, h('i', { style: 'background:' + c }), n))));
@@ -1240,8 +1268,11 @@ Object.assign(ScoreEditor.prototype, {
     C.redo = btn(['↷', lbl(' Rétablir')], 'Rétablir (Ctrl+Y)', () => self.redo());
     C.del = btn(['⌫', lbl(' Supprimer')], 'Supprimer la note sélectionnée (Suppr)', () => self.remove(), 'se-danger');
     C.play = btn('▶', 'Lecture / arrêt (Espace)', () => self.togglePlay(), 'se-primary se-icon');
+    C.selAll = btn('Tout', 'Tout sélectionner', () => self.selectAll());
+    C.selNone = btn('∅', 'Tout désélectionner', () => self.clearSelection(), 'se-icon');
     this.$root.append(
-      h('div', { class: 'se-top' }, h('div', { class: 'se-tabs', role: 'tablist' }, C.tabs), h('div', { class: 'se-quick' }, C.undo, C.redo, C.del, C.play)),
+      h('div', { class: 'se-top' }, h('div', { class: 'se-tabs', role: 'tablist' }, C.tabs),
+        h('div', { class: 'se-quick' }, C.undo, C.redo, C.del, C.multi, C.confirmB, C.selAll, C.selNone, C.play)),
       writeP, chordP, voiceP, fileP);
   },
 
@@ -1272,8 +1303,11 @@ Object.assign(ScoreEditor.prototype, {
         c.btn.classList.toggle('se-on', !!(c.on && c.on(it.v)));
       });
       C.multi.setAttribute('aria-pressed', String(this.multi)); C.confirmB.setAttribute('aria-pressed', String(this.confirm));
+      C.muteTog.setAttribute('aria-pressed', String(this.mute));
       C.swatches.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.c === this.pick)));
-      C.pens.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.c === this.pen)));
+      C.penBtn.style.background = this.pen || '';
+      C.penBtn.classList.toggle('se-none', !this.pen);
+      C.penBtn.setAttribute('aria-pressed', String(!!this.pen));
       C.bars.setAttribute('aria-pressed', String(!!S.barNumbers));
       if (root.document.activeElement !== C.title) C.title.value = S.title || '';
       if (root.document.activeElement !== C.tempo) C.tempo.value = S.tempo;
@@ -1553,13 +1587,13 @@ Object.assign(ScoreEditor.prototype, {
     const off = a.curve ? -a.curve * Math.min(sp * 2.6, len * 0.3) : 0;
     const mx = (x1 + x2) / 2, my = (y1 + y2) / 2 + off;
     let tx = x2 - mx, ty = y2 - my; const tl = Math.hypot(tx, ty) || 1; tx /= tl; ty /= tl;
-    const hl = sp * 1.15, hw = sp * 0.52, bx = x2 - tx * hl, by = y2 - ty * hl;
+    const hl = sp * 1.15, hw = sp * 0.416, bx = x2 - tx * hl, by = y2 - ty * hl;
     const grp = sv('g', { class: 'se-arrow' });
     grp.append(sv('path', { d: 'M' + x1 + ' ' + y1 + ' Q' + mx + ' ' + my + ' ' + bx + ' ' + by, fill: 'none', stroke: a.color, 'stroke-width': sp * 0.24, 'stroke-linecap': 'round', 'stroke-dasharray': a.dashed ? (sp * 0.5) + ' ' + (sp * 0.45) : null }));
     grp.append(sv('polygon', { points: [[x2, y2], [bx - ty * hw, by + tx * hw], [bx + ty * hw, by - tx * hw]].map((q) => q.join(',')).join(' '), fill: a.color }));
     if (a.label) {
       const px = 0.25 * x1 + 0.5 * mx + 0.25 * bx, py = 0.25 * y1 + 0.5 * my + 0.25 * by;
-      grp.append(sv('text', { x: px, y: py - sp * (a.curve >= 0 ? 0.55 : -1.35), 'text-anchor': 'middle', 'font-size': sp * 1.55, 'font-weight': 700, 'font-family': 'system-ui, Arial, sans-serif', fill: a.color, stroke: '#fff', 'stroke-width': sp * 0.5, 'paint-order': 'stroke', 'stroke-linejoin': 'round' }, a.label));
+      grp.append(sv('text', { x: px, y: py - sp * (a.curve >= 0 ? 0.42 : -0.95), 'text-anchor': 'middle', 'font-size': sp * 1.085, 'font-weight': 700, 'font-family': 'system-ui, Arial, sans-serif', fill: a.color, stroke: '#fff', 'stroke-width': sp * 0.35, 'paint-order': 'stroke', 'stroke-linejoin': 'round' }, a.label));
     }
     return grp;
   },
@@ -1690,7 +1724,7 @@ Object.assign(ScoreEditor.prototype, {
     const ok = this._mutate('place', () => {
       const st = this.S.staves[it.si], m = st.measures[it.mi], e = m[it.ei];
       if (!e || e.kind !== 'rest') return false;
-      const res = placeInRest(m, it.ei, cap, want, (d) => Object.assign(newRest(d), { kind, pitches: kind === 'note' ? [p] : [], color: kind === 'slash' ? (this.pen || '') : '' }));
+      const res = placeInRest(m, it.ei, cap, want, (d) => Object.assign(newRest(d), { kind, pitches: kind === 'note' ? [p] : [], color: kind === 'slash' ? (this.pen || '') : '', mute: kind === 'slash' ? this.mute : false }));
       if (res.dur !== want) shortened = true;
       st.measures[it.mi] = res.m;
       this.sel = [{ e: res.ev.id, p: kind === 'note' ? p.id : null }];
@@ -1790,13 +1824,32 @@ Object.assign(ScoreEditor.prototype, {
     this.stop();
     const S = this.S, cap = capOf(S.meter), u = 60 / (S.tempo * 4), t0 = ctx.currentTime + 0.15;
     const items = [];
-    S.staves.forEach((st, si) => st.measures.forEach((m, mi) => { let p = 0; m.forEach((e) => { items.push({ t: mi * cap + p, d: e.dur, e, clef: st.clef }); p += e.dur; }); }));
+    S.staves.forEach((st, si) => st.measures.forEach((m, mi) => { let p = 0; m.forEach((e) => { items.push({ t: mi * cap + p, d: e.dur, e, clef: st.clef, si }); p += e.dur; }); }));
     const nodes = [];
+    // notes liées (tie) : fusionne les notes tenues en un seul son, pour ne pas rejouer l'attaque à chaque note
+    S.staves.forEach((st, si) => {
+      const open = {}, segs = [];
+      items.filter((it) => it.si === si && it.e.kind === 'note').forEach((it) => {
+        const seen = {};
+        it.e.pitches.forEach((pp) => {
+          const key = pp.step + ':' + pp.alt + ':' + pp.oct;
+          seen[key] = 1;
+          if (open[key]) open[key].end = it.t + it.d;
+          else { const seg = { midi: midiOf(pp), start: it.t, end: it.t + it.d }; segs.push(seg); open[key] = seg; }
+        });
+        Object.keys(open).forEach((k) => { if (!seen[k]) delete open[k]; });
+        if (!it.e.tie) Object.keys(seen).forEach((k) => delete open[k]);
+      });
+      const startN = {}; segs.forEach((s) => { startN[s.start] = (startN[s.start] || 0) + 1; });
+      segs.forEach((s) => nodes.push(this._tone(ctx, s.midi, t0 + s.start * u, Math.max(0.12, (s.end - s.start) * u * 0.96), 0.14 / Math.sqrt(startN[s.start]))));
+    });
+    // silences, slashs et accords en rythme (symbole d'accord) : indépendants des liaisons, coupés par un slash muet
     items.forEach((it) => {
-      let midis = [];
-      if (it.e.kind === 'note') midis = it.e.pitches.map(midiOf);
-      else if (it.e.chord) { const v = voiceChord(it.e.chord, it.clef === 'bass' ? 40 : 55); if (v) midis = v.map(midiOf); }
-      midis.forEach((m) => nodes.push(this._tone(ctx, m, t0 + it.t * u, Math.max(0.12, it.d * u * 0.96), 0.14 / Math.sqrt(Math.max(1, midis.length)))));
+      if (it.e.kind === 'note' || it.e.mute) return;
+      if (!it.e.chord) return;
+      const v = voiceChord(it.e.chord, it.clef === 'bass' ? 40 : 55);
+      if (!v) return;
+      v.forEach((pp) => nodes.push(this._tone(ctx, midiOf(pp), t0 + it.t * u, Math.max(0.12, it.d * u * 0.96), 0.14 / Math.sqrt(v.length))));
     });
     const total = S.staves[0].measures.length * cap * u;
     this._playing = { ctx, nodes, t0, u, items, total };

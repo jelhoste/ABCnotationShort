@@ -1,6 +1,6 @@
 /* Service worker — fonctionnement hors ligne.
  * Pour publier une mise à jour : changez VERSION (les anciens caches sont supprimés). */
-const VERSION = 'v2';
+const VERSION = 'v6';
 const CACHE = 'partition-abc-' + VERSION;
 const ABCJS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/abcjs/6.5.2/abcjs-basic-min.js';
 const ABCJS_LOCAL = 'vendor/abcjs-basic-min.js';       // optionnel (voir vendor/LISEZ-MOI.txt)
