@@ -500,9 +500,10 @@ class ScoreEditor {
     this.sel = []; this.dur = 4; this.dotted = false; this.acc = 'auto';
     this.kind = 'note'; this.mode = 'write'; this.multi = false; this.tab = 'write';
     this.pending = null; this.geo = null;
-    this.confirm = !!(root.matchMedia && root.matchMedia('(pointer: coarse)').matches);
+    this.touch = !!(root.matchMedia && root.matchMedia('(pointer: coarse)').matches);
+    this.confirm = false; // désactivé par défaut, y compris sur écran tactile — l'utilisateur l'active s'il le souhaite
     this.S = o.data ? normalizeState(o.data) : newState(o);
-    this.scale = o.scale || (this.confirm ? 1.7 : 1.35);
+    this.scale = o.scale || (this.touch ? 1.7 : 1.35);
     this.el = (typeof target === 'string' && root.document) ? root.document.querySelector(target) : target;
     this.headless = !this.el || !root.document || !this.el.appendChild;
     this.abcjs = o.abcjs || root.ABCJS || null;
@@ -673,15 +674,16 @@ class ScoreEditor {
    *  - pitch : 'C4' | ['C4','E4','G4']   (notation anglo-saxonne, # et b)
    *  - dur   : 'w' 'h' 'q' 'e' 's' (+ '.') ou 16 8 4 2 1
    *  - position : en noires depuis le début de la mesure (défaut : premier silence libre)
-   *  - kind  : 'note' (défaut) | 'slash'
+   *  - kind  : 'note' (défaut) | 'slash' | 'mark' (repère visuel muet, durée fixe : une noire)
    * Retourne l'id de l'événement (ou null).
    */
   addNote(spec) {
     const S = this.S, si = spec.staff || 0, mi = spec.measure || 0;
     const st = S.staves[si];
     if (!st || !st.measures[mi]) throw new Error('Portée ou mesure invalide');
-    const cap = capOf(S.meter), d = parseDur(spec.dur != null ? spec.dur : this.dur, spec.dotted);
-    const kind = spec.kind === 'slash' ? 'slash' : 'note';
+    const isMark = spec.kind === 'mark';
+    const cap = capOf(S.meter), d = isMark ? 4 : parseDur(spec.dur != null ? spec.dur : this.dur, spec.dotted);
+    const kind = (spec.kind === 'slash' || isMark) ? 'slash' : 'note';
     let id = null;
     const ok = this._mutate('addNote', () => {
       let m = st.measures[mi], idx;
@@ -702,7 +704,7 @@ class ScoreEditor {
       if (spec.text != null) ev.text = String(spec.text);
       if (spec.textPos) ev.textPos = spec.textPos === 'below' ? 'below' : 'above';
       if (spec.color) { ev.pitches.forEach((p) => { p.color = spec.color; }); ev.color = spec.color; }
-      if (kind === 'slash' && spec.mute != null) ev.mute = !!spec.mute;
+      if (kind === 'slash') ev.mute = isMark ? true : !!spec.mute;
       id = ev.id;
     });
     return ok === false ? null : id;
@@ -1097,13 +1099,29 @@ font:13px/1.35 "Atkinson Hyperlegible",system-ui,-apple-system,"Segoe UI",Roboto
 .se-ta{width:100%;min-height:220px;font:12.5px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--se-field);color:var(--se-fieldink);border:1px solid var(--se-line);border-radius:9px;padding:10px;resize:vertical}
 .se-prev{background:#fff;border-radius:8px;box-shadow:0 0 0 1px var(--se-line);max-height:260px;overflow:auto;padding:6px}
 .se-prev svg{max-width:100%;height:auto;display:block}
-@media (pointer:coarse){.se-btn,.se-input,.se-select{min-height:35px}.se-btn.se-icon{min-width:35px}.se-swatch{width:35px;height:35px}.se-tab{min-height:35px}.se-pending .se-btn{min-height:35px}.se-pending{height:40px}.se-quick{padding:0 8px}}
+@media (pointer:coarse){.se-btn,.se-input,.se-select{min-height:35px}.se-btn.se-icon{min-width:35px}.se-swatch{width:35px;height:35px}.se-tab{min-height:35px}.se-pending .se-btn{min-height:35px}.se-pending{height:40px}.se-quick{padding:0 8px}.se-durbtn{min-height:44px!important;min-width:44px!important}}
+.se-durbtn{min-height:35px;min-width:35px}
 @media (max-width:640px){.se-panel{gap:8px 14px;max-height:38vh;overflow-y:auto}.se-tab{padding:0 10px}.se-lbl{display:none}.se-quick{gap:4px;padding:4px 8px}}
 `;
 function injectCSS() {
   const d = root.document;
   if (!d || d.getElementById('se-css')) return;
   const s = d.createElement('style'); s.id = 'se-css'; s.textContent = CSS; d.head.appendChild(s);
+}
+
+function kindIcon(k) {
+  const stem = '<path d="M15.2 22V4" stroke="currentColor" stroke-width="2" fill="none"/>';
+  if (k === 'slash') {
+    return '<svg viewBox="0 0 24 32" width="17" height="24" aria-hidden="true">' + stem
+      + '<polygon points="4,27 12,27 16,17 8,17" fill="currentColor"/></svg>';
+  }
+  if (k === 'mark') {
+    // repère visuel muet : même losange que le slash mais SANS hampe, pour bien le distinguer du rythme joué
+    return '<svg viewBox="0 0 24 32" width="17" height="24" aria-hidden="true">'
+      + '<polygon points="5,20 13,20 17,10 9,10" fill="currentColor" fill-opacity="0.62"/></svg>';
+  }
+  return '<svg viewBox="0 0 24 32" width="17" height="24" aria-hidden="true">' + stem
+    + '<ellipse cx="9.5" cy="24" rx="6.6" ry="4.4" transform="rotate(-22 9.5 24)" fill="currentColor"/></svg>';
 }
 
 function durIcon(base) {
@@ -1176,11 +1194,16 @@ Object.assign(ScoreEditor.prototype, {
     C.meter = h('select', { class: 'se-select', 'aria-label': 'Mesure', onchange: (e) => { const [n, d] = e.target.value.split('/').map(Number); self.setMeter(n, d); } },
       METERS.map((m) => h('option', { value: m[0] + '/' + m[1] }, m[0] + '/' + m[1])));
     C.count = h('span', { class: 'se-glabel', style: 'min-width:5.5em;text-align:center' });
-    C.dur = h('select', { class: 'se-select', 'aria-label': 'Durée de la prochaine note', title: 'Durée de la prochaine note', onchange: (e) => self.setInputDur(Number(e.target.value)) },
-      [16, 8, 4, 2, 1].map((d) => h('option', { value: d }, DUR_NAME[d][0].toUpperCase() + DUR_NAME[d].slice(1))));
+    // Boutons de durée (têtes de note) : taille tactile garantie même quand le reste de l'UI est compact.
+    // Une note sélectionnée reçoit directement la durée choisie ; sinon, elle ne fait que régler la prochaine saisie.
+    C.durs = [16, 8, 4, 2, 1].map((d) => {
+      const b = h('button', { type: 'button', class: 'se-btn se-icon se-durbtn', title: DUR_NAME[d][0].toUpperCase() + DUR_NAME[d].slice(1), 'aria-label': DUR_NAME[d], html: durIcon(d),
+        onclick: () => { self.setInputDur(d); if (self.sel.length) self.setDuration(d, self.dotted); } });
+      b.dataset.dur = d; return b;
+    });
     C.dot = tog('dot', '•', 'Pointée (ajoute la moitié de la durée)', () => self.setInputDotted(!self.dotted));
     const modeCyc = cyc({ title: 'Mode de saisie', w: '7.4em', items: [{ v: 'write', l: 'Écrire' }, { v: 'select', l: 'Sélectionner' }], get: () => self.mode, set: (v) => self.setMode(v), on: (v) => v === 'select' });
-    const kindCyc = cyc({ title: 'Type de saisie', w: '5.4em', items: [{ v: 'note', l: 'Note' }, { v: 'slash', l: 'Slash /' }], get: () => self.kind, set: (v) => self.setKind(v), on: (v) => v === 'slash' });
+    const kindCyc = cyc({ title: 'Type de saisie : note, slash (rythme) ou repère (marque muette, durée fixe d\'une noire)', w: '3.2em', items: [{ v: 'note', html: kindIcon('note') }, { v: 'slash', html: kindIcon('slash') }, { v: 'mark', html: kindIcon('mark') }], get: () => self.kind, set: (v) => self.setKind(v), on: (v) => v !== 'note' });
     this.mute = false;
     C.muteTog = tog('muteTog', 'Muet', 'Slash muet (noire pleine, sans hampe) : marque le temps visuellement, sans jouer de son à la lecture — s\'applique au prochain slash écrit', () => { self.mute = !self.mute; self._updateUI(); });
     const accCyc = cyc({ title: 'Altération de la prochaine note', w: '4.6em', items: [{ v: 'auto', l: 'auto' }, { v: -1, l: '♭' }, { v: 0, l: '♮' }, { v: 1, l: '♯' }], get: () => self.acc, set: (v) => self.setAcc(v), on: (v) => v !== 'auto' });
@@ -1204,7 +1227,7 @@ Object.assign(ScoreEditor.prototype, {
     this.pen = this.o.pen || '';
     C.penBtn = h('button', { type: 'button', class: 'se-swatch', title: 'Couleur des prochaines notes — toucher pour choisir', 'aria-label': 'Couleur d\'écriture', onclick: () => self._openPenPicker() });
     const writeP = h('div', { class: 'se-panel', role: 'tabpanel' },
-      group('Durée', C.dur, C.dot, C.tie),
+      group('Durée', seg(C.durs), C.dot, C.tie),
       group('Type', kindCyc, C.muteTog),
       group('Altération', accCyc),
       group('Mode', modeCyc),
@@ -1212,7 +1235,7 @@ Object.assign(ScoreEditor.prototype, {
       group('Transposer',
         hold('▼', 'Clic court : un demi-ton plus bas · clic long : une octave plus bas', () => self.transpose(-1), () => self.transpose(-12)),
         hold('▲', 'Clic court : un demi-ton plus haut · clic long : une octave plus haut', () => self.transpose(1), () => self.transpose(12))),
-      group('Modifier', btn('Appliquer la durée', 'Donne la durée choisie aux éléments sélectionnés', () => self.setDuration(self.dur, self.dotted)), btn('Vider la mesure', 'Efface toute la mesure de la sélection', () => { const t = self._targets()[0]; if (t) self.clearMeasure(t.mi); })),
+      group('Modifier', btn('Vider la mesure', 'Efface toute la mesure de la sélection', () => { const t = self._targets()[0]; if (t) self.clearMeasure(t.mi); })),
       group('Flèche entre deux notes', C.alabel, C.acurve,
         btn('Relier →', 'Sélection multiple : choisissez la note de départ puis celle d\'arrivée', () => self.arrowFromSelection({ label: C.alabel.value, curve: Number(C.acurve.value), color: self.pick || self.pen || '#495057' }), 'se-primary')),
       group('Flèches automatiques', btn('Une flèche par voix', 'Relie chaque voix d\'un accord au suivant (forme choisie ci-dessus : droit / courbe)', () => self.autoArrows({ curve: Number(C.acurve.value) })), btn('Retirer (sélection)', 'Retire les flèches des notes sélectionnées', () => self.removeArrows('selection')), btn('Tout retirer', 'Retire toutes les flèches', () => self.removeArrows('all'), 'se-danger')));
@@ -1221,14 +1244,26 @@ Object.assign(ScoreEditor.prototype, {
     C.chord = h('input', { class: 'se-input', type: 'text', placeholder: 'Cmaj7, Dm7, G7/B…', 'aria-label': 'Symbole d\'accord', size: 14, onkeydown: (e) => { if (e.key === 'Enter') self.setChord(e.target.value); } });
     C.text = h('input', { class: 'se-input', type: 'text', placeholder: 'ex. sensible ↓, 3ce…', 'aria-label': 'Texte', size: 18, onkeydown: (e) => { if (e.key === 'Enter') self.setText(e.target.value, C.textPos.value); } });
     C.textPos = h('select', { class: 'se-select', 'aria-label': 'Position du texte' }, h('option', { value: 'above' }, 'au-dessus'), h('option', { value: 'below' }, 'en dessous'));
-    const glyphs = ['↑', '↓', '→', '↗', '↘', '='].map((g) => btn(g, 'Insérer ' + g, () => { C.text.value += g; C.text.focus(); }, 'se-icon'));
+    const GLYPHS = ['↑', '↓', '→', '↗', '↘', '='];
+    const openGlyphPicker = () => {
+      const close = () => { modal.remove(); C.text.focus(); };
+      const pick = (g) => { C.text.value += g; close(); };
+      const row = h('div', { class: 'se-row', style: 'flex-wrap:wrap;max-width:260px' },
+        GLYPHS.map((g) => h('button', { type: 'button', class: 'se-btn', style: 'min-width:44px;font-size:17px', onclick: () => pick(g) }, g)));
+      const modal = h('div', { class: 'se-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Symboles rapides', onclick: (e) => { if (e.target === modal) close(); }, onkeydown: (e) => { if (e.key === 'Escape') close(); } },
+        h('div', { class: 'se-dlg', style: 'width:min(320px,92vw);gap:14px' },
+          h('div', { class: 'se-row', style: 'justify-content:space-between' }, h('h3', null, 'Insérer un symbole'), h('button', { type: 'button', class: 'se-btn se-icon', 'aria-label': 'Fermer', onclick: close }, '✕')),
+          row));
+      self.$root.append(modal);
+    };
+    C.glyphBtn = btn('Symboles rapides…', 'Insérer une flèche ou un signe dans le texte', openGlyphPicker);
     const chordP = h('div', { class: 'se-panel', role: 'tabpanel', hidden: true },
       group('Symbole d\'accord (au-dessus de la note, du silence ou du slash)', C.chord, btn('Appliquer', 'Appliquer le symbole', () => self.setChord(C.chord.value), 'se-primary'), btn('Effacer', 'Retirer le symbole', () => self.setChord('')),),
       group('Lien symbole ↔ notes',
         btn('Nommer d\'après les notes', 'Déduit le symbole des notes empilées', () => self.nameFromNotes()),
         btn('Écrire les notes du symbole', 'Génère les notes à partir du symbole d\'accord', () => self.notesFromChord())),
       group('Texte attaché à la note', C.text, C.textPos, btn('Appliquer', 'Appliquer le texte', () => self.setText(C.text.value, C.textPos.value), 'se-primary'), btn('Effacer', 'Retirer le texte', () => self.setText('', C.textPos.value))),
-      group('Symboles rapides', seg(glyphs)),
+      group('Symboles rapides', C.glyphBtn),
       h('div', { class: 'se-hint' }, 'Astuce : en mode « Slash », un clic sur un silence crée un slash ; ajoutez ensuite le symbole d\'accord. « Écrire les notes du symbole » le transforme en accord sur la portée.'));
 
     /* --- onglet Voix --- */
@@ -1312,7 +1347,9 @@ Object.assign(ScoreEditor.prototype, {
       if (root.document.activeElement !== C.title) C.title.value = S.title || '';
       if (root.document.activeElement !== C.tempo) C.tempo.value = S.tempo;
       { const zs = [].map.call(C.zoom.options, (o) => Number(o.value)); C.zoom.value = String(zs.reduce((a, b) => (Math.abs(b - this.scale) < Math.abs(a - this.scale) ? b : a))); }
-      C.dur.value = String(this.dur);
+      C.durs.forEach((b) => { b.setAttribute('aria-pressed', String(Number(b.dataset.dur) === this.dur)); b.disabled = this.kind === 'mark'; });
+      C.dot.disabled = this.kind === 'mark';
+      C.muteTog.disabled = this.kind === 'mark';
       C.perLine.value = String(this.o.perLine);
       C.undo.disabled = !this.undoS.length; C.redo.disabled = !this.redoS.length;
       const hasSel = this.sel.length > 0;
@@ -1331,7 +1368,7 @@ Object.assign(ScoreEditor.prototype, {
       const t = this._selectionText();
       const dn = DUR_NAME[parseDur(this.dur, this.dotted)];
       this.$status.textContent = t ? 'Sélection : ' + t : (this.mode === 'write'
-        ? 'Clic sur un silence : nouvelle ' + (this.kind === 'slash' ? 'barre de slash' : dn) + ' · clic au-dessus/en dessous d\'une note : accord · clic sur une tête de note : sélection'
+        ? 'Clic sur un silence : nouvelle ' + (this.kind === 'mark' ? 'marque muette (noire)' : this.kind === 'slash' ? 'barre de slash' : dn) + ' · clic au-dessus/en dessous d\'une note : accord · clic sur une tête de note : sélection'
         : 'Mode sélection : touchez une note pour la sélectionner');
     }
     this._renderPending();
@@ -1345,7 +1382,7 @@ Object.assign(ScoreEditor.prototype, {
     this.$pend.innerHTML = '';
     if (!p) { this.$pend.append(h('span', { class: 'se-idle' }, 'Touchez pour prévisualiser · retouchez pour placer')); return; }
     this.$pend.append(
-      h('strong', { style: 'min-width:4.2em' }, (p.type === 'chord' ? '+ ' : '') + (this.kind === 'slash' && p.type === 'place' ? 'slash' : pitchName(p.pitch))),
+      h('strong', { style: 'min-width:4.2em' }, (p.type === 'chord' ? '+ ' : '') + (p.type === 'place' && this.kind === 'slash' ? 'slash' : p.type === 'place' && this.kind === 'mark' ? 'repère' : pitchName(p.pitch))),
       h('button', { type: 'button', class: 'se-btn se-icon', 'aria-label': 'Note plus haute', onclick: () => self._nudgePending(1) }, '▲'),
       h('button', { type: 'button', class: 'se-btn se-icon', 'aria-label': 'Note plus basse', onclick: () => self._nudgePending(-1) }, '▼'),
       h('button', { type: 'button', class: 'se-btn se-primary', onclick: () => self._commitPending() }, '✓ Placer'),
@@ -1566,8 +1603,13 @@ Object.assign(ScoreEditor.prototype, {
     const ev = eg.ev, st = eg.st, sp = st.sp, col = ev.color || '#000';
     const cx = eg.heads.length ? eg.heads[0].r.cx : eg.r.cx, cy = st.cy;
     const a = sp * 1.0, b = sp * 0.95, t = sp * 0.62, d = ev.dur;
-    const grp = sv('g', { class: 'se-slash' });
+    const grp = sv('g', { class: 'se-slash' + (ev.mute ? ' se-slash-mute' : '') });
     const pts = [[cx - a, cy + b], [cx - a + t, cy + b], [cx + a, cy - b], [cx + a - t, cy - b]].map((q) => q.join(',')).join(' ');
+    if (ev.mute) {
+      // repère / slash muet : uniquement le losange, jamais de hampe ni de crochet — c'est un repère visuel, pas une durée jouée
+      grp.append(sv('polygon', { points: pts, fill: col, stroke: col, 'stroke-width': sp * 0.24, 'stroke-linejoin': 'round', 'fill-opacity': 0.62 }));
+      return grp;
+    }
     grp.append(sv('polygon', { points: pts, fill: d <= 4 || d === 6 || d === 3 ? col : 'none', stroke: col, 'stroke-width': sp * 0.24, 'stroke-linejoin': 'round' }));
     const sx = cx + a - t * 0.5;
     if (d <= 12 && d !== 16) grp.append(sv('line', { x1: sx, y1: cy - b, x2: sx, y2: cy - b - sp * 3.6, stroke: col, 'stroke-width': sp * 0.22 }));
@@ -1587,13 +1629,13 @@ Object.assign(ScoreEditor.prototype, {
     const off = a.curve ? -a.curve * Math.min(sp * 2.6, len * 0.3) : 0;
     const mx = (x1 + x2) / 2, my = (y1 + y2) / 2 + off;
     let tx = x2 - mx, ty = y2 - my; const tl = Math.hypot(tx, ty) || 1; tx /= tl; ty /= tl;
-    const hl = sp * 1.15, hw = sp * 0.416, bx = x2 - tx * hl, by = y2 - ty * hl;
+    const hl = sp * 0.92, hw = sp * 0.333, bx = x2 - tx * hl, by = y2 - ty * hl;
     const grp = sv('g', { class: 'se-arrow' });
     grp.append(sv('path', { d: 'M' + x1 + ' ' + y1 + ' Q' + mx + ' ' + my + ' ' + bx + ' ' + by, fill: 'none', stroke: a.color, 'stroke-width': sp * 0.24, 'stroke-linecap': 'round', 'stroke-dasharray': a.dashed ? (sp * 0.5) + ' ' + (sp * 0.45) : null }));
     grp.append(sv('polygon', { points: [[x2, y2], [bx - ty * hw, by + tx * hw], [bx + ty * hw, by - tx * hw]].map((q) => q.join(',')).join(' '), fill: a.color }));
     if (a.label) {
       const px = 0.25 * x1 + 0.5 * mx + 0.25 * bx, py = 0.25 * y1 + 0.5 * my + 0.25 * by;
-      grp.append(sv('text', { x: px, y: py - sp * (a.curve >= 0 ? 0.42 : -0.95), 'text-anchor': 'middle', 'font-size': sp * 1.085, 'font-weight': 700, 'font-family': 'system-ui, Arial, sans-serif', fill: a.color, stroke: '#fff', 'stroke-width': sp * 0.35, 'paint-order': 'stroke', 'stroke-linejoin': 'round' }, a.label));
+      grp.append(sv('text', { x: px, y: py - sp * (a.curve >= 0 ? 0.3 : -0.6), 'text-anchor': 'middle', 'font-size': sp * 0.5425, 'font-weight': 700, 'font-family': 'system-ui, Arial, sans-serif', fill: a.color, stroke: '#fff', 'stroke-width': sp * 0.175, 'paint-order': 'stroke', 'stroke-linejoin': 'round' }, a.label));
     }
     return grp;
   },
@@ -1630,9 +1672,9 @@ Object.assign(ScoreEditor.prototype, {
     });
     const it = this.pending || this._ghost;
     if (it) {
-      const sp = it.st.sp, x = it.x, y = it.type === 'place' && this.kind === 'slash' ? it.st.cy : yOfStaff(it.st, it.dia);
+      const sp = it.st.sp, x = it.x, diamond = it.type === 'place' && (this.kind === 'slash' || this.kind === 'mark'), y = diamond ? it.st.cy : yOfStaff(it.st, it.dia);
       const strong = !!this.pending;
-      if (it.type === 'place' && this.kind === 'slash') ov.append(sv('polygon', { points: [[x - sp, y + sp * 0.95], [x - sp * 0.4, y + sp * 0.95], [x + sp, y - sp * 0.95], [x + sp * 0.4, y - sp * 0.95]].map((q) => q.join(',')).join(' '), fill: ACCENT, 'fill-opacity': strong ? 0.8 : 0.45 }));
+      if (diamond) ov.append(sv('polygon', { points: [[x - sp, y + sp * 0.95], [x - sp * 0.4, y + sp * 0.95], [x + sp, y - sp * 0.95], [x + sp * 0.4, y - sp * 0.95]].map((q) => q.join(',')).join(' '), fill: ACCENT, 'fill-opacity': strong ? 0.8 : 0.45 }));
       else {
         ov.append(sv('ellipse', { cx: x, cy: y, rx: sp * 0.72, ry: sp * 0.52, transform: 'rotate(-20 ' + x + ' ' + y + ')', fill: this.pen || ACCENT, 'fill-opacity': strong ? 0.85 : 0.5 }));
         // traits supplémentaires si hors portée
@@ -1719,12 +1761,13 @@ Object.assign(ScoreEditor.prototype, {
   },
 
   _placeAt(it) {
-    const cap = capOf(this.S.meter), kind = this.kind, want = parseDur(this.dur, this.dotted), p = this._pitchFromDia(it.dia);
+    const isMark = this.kind === 'mark', kind = isMark ? 'slash' : this.kind;
+    const cap = capOf(this.S.meter), want = isMark ? 4 : parseDur(this.dur, this.dotted), p = this._pitchFromDia(it.dia);
     let shortened = false;
     const ok = this._mutate('place', () => {
       const st = this.S.staves[it.si], m = st.measures[it.mi], e = m[it.ei];
       if (!e || e.kind !== 'rest') return false;
-      const res = placeInRest(m, it.ei, cap, want, (d) => Object.assign(newRest(d), { kind, pitches: kind === 'note' ? [p] : [], color: kind === 'slash' ? (this.pen || '') : '', mute: kind === 'slash' ? this.mute : false }));
+      const res = placeInRest(m, it.ei, cap, want, (d) => Object.assign(newRest(d), { kind, pitches: kind === 'note' ? [p] : [], color: kind === 'slash' ? (this.pen || '') : '', mute: isMark ? true : (kind === 'slash' ? this.mute : false) }));
       if (res.dur !== want) shortened = true;
       st.measures[it.mi] = res.m;
       this.sel = [{ e: res.ev.id, p: kind === 'note' ? p.id : null }];
