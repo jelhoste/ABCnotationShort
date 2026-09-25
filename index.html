@@ -420,7 +420,10 @@ function measureABC(clef, evs, beat, ka, lia) {
     if (e.text) s += '"' + (e.textPos === 'below' ? '_' : '^') + abcText(e.text) + '"';
     const dn = e.dur === 1 ? '' : String(e.dur);
     if (e.kind === 'rest') s += 'z' + dn;
-    else if (e.kind === 'slash') s += (clef === 'bass' ? 'D,' : 'B') + dn;
+    // Le losange de slash est un dessin personnalisé, toujours superposé ; le jeton ABC réel n'a donc
+    // pas besoin d'être une note (avec hampe automatique) — un silence suffit, est toujours sans hampe,
+    // et reste discret si jamais notre calque de dessin ne le recouvrait pas parfaitement.
+    else if (e.kind === 'slash') s += 'z' + dn;
     else {
       const ps = e.pitches.slice().sort((a, b) => midiOf(a) - midiOf(b));
       const o = '('.repeat((lia && lia.open[e.id]) || 0), c = ')'.repeat((lia && lia.close[e.id]) || 0), tie = e.tie ? '-' : '';
@@ -1222,7 +1225,19 @@ Object.assign(ScoreEditor.prototype, {
     });
     C.dot = tog('dot', '•', 'Pointée (ajoute la moitié de la durée)', () => self.setInputDotted(!self.dotted));
     const modeCyc = cyc({ title: 'Mode de saisie', w: '7.4em', items: [{ v: 'write', l: 'Écrire' }, { v: 'select', l: 'Sélectionner' }], get: () => self.mode, set: (v) => self.setMode(v), on: (v) => v === 'select' });
-    const kindCyc = cyc({ title: 'Type de saisie : note, slash (rythme) ou repère (marque muette, durée fixe d\'une noire)', w: '3.2em', items: [{ v: 'note', html: kindIcon('note') }, { v: 'slash', html: kindIcon('slash') }, { v: 'mark', html: kindIcon('mark') }], get: () => self.kind, set: (v) => self.setKind(v), on: (v) => v !== 'note' });
+    const KIND_ITEMS = [{ v: 'note', l: 'Note' }, { v: 'slash', l: 'Slash (rythme)' }, { v: 'mark', l: 'Repère (muet)' }];
+    const openTypePicker = () => {
+      const close = () => { modalT.remove(); self.$root.focus(); };
+      const pick = (v) => { self.setKind(v); close(); };
+      const row = h('div', { class: 'se-row', style: 'flex-wrap:wrap;max-width:280px' },
+        KIND_ITEMS.map((it) => h('button', { type: 'button', class: 'se-btn', style: 'flex-direction:column;gap:2px;min-width:74px;padding:8px 6px', html: kindIcon(it.v), onclick: () => pick(it.v) }, h('span', { style: 'font-size:12px' }, it.l))));
+      const modalT = h('div', { class: 'se-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Type de saisie', onclick: (e) => { if (e.target === modalT) close(); }, onkeydown: (e) => { if (e.key === 'Escape') close(); } },
+        h('div', { class: 'se-dlg', style: 'width:min(320px,92vw);gap:14px' },
+          h('div', { class: 'se-row', style: 'justify-content:space-between' }, h('h3', null, 'Type de saisie'), h('button', { type: 'button', class: 'se-btn se-icon', 'aria-label': 'Fermer', onclick: close }, '✕')),
+          row));
+      self.$root.append(modalT);
+    };
+    C.typeBtn = h('button', { type: 'button', class: 'se-btn se-icon', title: 'Type de saisie : note, slash (rythme) ou repère (marque muette, durée fixe d\'une noire)', 'aria-label': 'Type de saisie', onclick: openTypePicker });
     this.mute = false;
     C.muteTog = tog('muteTog', 'Muet', 'Slash muet (noire pleine, sans hampe) : marque le temps visuellement, sans jouer de son à la lecture — s\'applique au prochain slash écrit', () => { self.mute = !self.mute; self._updateUI(); });
     const accCyc = cyc({ title: 'Altération de la prochaine note', w: '4.6em', items: [{ v: 'auto', l: 'auto' }, { v: -1, l: '♭' }, { v: 0, l: '♮' }, { v: 1, l: '♯' }], get: () => self.acc, set: (v) => self.setAcc(v), on: (v) => v !== 'auto' });
@@ -1243,21 +1258,34 @@ Object.assign(ScoreEditor.prototype, {
     C.alabel = h('input', { class: 'se-input', type: 'text', placeholder: 'libellé (option)', 'aria-label': 'Libellé de la flèche', size: 12 });
     C.acurve = h('select', { class: 'se-select', 'aria-label': 'Forme de la flèche' }, h('option', { value: '0' }, 'Droit'), h('option', { value: '1' }, 'Courbe h'), h('option', { value: '-1' }, 'Courbe b'));
 
+    const openArrowOptions = () => {
+      const close = () => { modalA.remove(); self.$root.focus(); };
+      const modalA = h('div', { class: 'se-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Flèches', onclick: (e) => { if (e.target === modalA) close(); }, onkeydown: (e) => { if (e.key === 'Escape') close(); } },
+        h('div', { class: 'se-dlg', style: 'width:min(360px,92vw);gap:14px' },
+          h('div', { class: 'se-row', style: 'justify-content:space-between' }, h('h3', null, 'Flèches'), h('button', { type: 'button', class: 'se-btn se-icon', 'aria-label': 'Fermer', onclick: close }, '✕')),
+          h('div', { class: 'se-group' }, h('div', { class: 'se-glabel' }, 'Entre deux notes sélectionnées'),
+            h('div', { class: 'se-row' }, C.alabel, C.acurve),
+            btn('Relier →', 'Sélection multiple : choisissez la note de départ puis celle d\'arrivée', () => self.arrowFromSelection({ label: C.alabel.value, curve: Number(C.acurve.value), color: self.pick || self.pen || '#495057' }), 'se-primary')),
+          h('div', { class: 'se-group' }, h('div', { class: 'se-glabel' }, 'Automatiques'),
+            h('div', { class: 'se-row' },
+              btn('Une flèche par voix', 'Relie chaque voix d\'un accord au suivant (forme choisie ci-dessus : droit / courbe)', () => self.autoArrows({ curve: Number(C.acurve.value) })),
+              btn('Retirer (sélection)', 'Retire les flèches des notes sélectionnées', () => self.removeArrows('selection')),
+              btn('Tout retirer', 'Retire toutes les flèches', () => self.removeArrows('all'), 'se-danger')))));
+      self.$root.append(modalA);
+    };
+    C.arrowBtn = btn('Flèches…', 'Flèche entre deux notes ou flèches automatiques par voix', openArrowOptions);
     this.pen = this.o.pen || '';
     C.penBtn = h('button', { type: 'button', class: 'se-swatch', title: 'Couleur des prochaines notes — toucher pour choisir', 'aria-label': 'Couleur d\'écriture', onclick: () => self._openPenPicker() });
     const writeP = h('div', { class: 'se-panel', role: 'tabpanel' },
       group('Durée', seg(C.durs), C.dot, C.tie),
-      group('Type', kindCyc, C.muteTog),
+      group('Type', C.typeBtn, C.muteTog),
       group('Altération', accCyc),
       group('Mode', modeCyc),
       group('Couleur', C.penBtn),
       group('Transposer',
         hold('▼', 'Clic court : un demi-ton plus bas · clic long : une octave plus bas', () => self.transpose(-1), () => self.transpose(-12)),
         hold('▲', 'Clic court : un demi-ton plus haut · clic long : une octave plus haut', () => self.transpose(1), () => self.transpose(12))),
-      group('Modifier', btn('Vider la mesure', 'Efface toute la mesure de la sélection', () => { const t = self._targets()[0]; if (t) self.clearMeasure(t.mi); })),
-      group('Flèche entre deux notes', C.alabel, C.acurve,
-        btn('Relier →', 'Sélection multiple : choisissez la note de départ puis celle d\'arrivée', () => self.arrowFromSelection({ label: C.alabel.value, curve: Number(C.acurve.value), color: self.pick || self.pen || '#495057' }), 'se-primary')),
-      group('Flèches automatiques', btn('Une flèche par voix', 'Relie chaque voix d\'un accord au suivant (forme choisie ci-dessus : droit / courbe)', () => self.autoArrows({ curve: Number(C.acurve.value) })), btn('Retirer (sélection)', 'Retire les flèches des notes sélectionnées', () => self.removeArrows('selection')), btn('Tout retirer', 'Retire toutes les flèches', () => self.removeArrows('all'), 'se-danger')));
+      group('Flèches', C.arrowBtn));
 
     /* --- onglet Accords & texte --- */
     C.chord = h('input', { class: 'se-input', type: 'text', placeholder: 'Cmaj7, Dm7, G7/B…', 'aria-label': 'Symbole d\'accord', size: 14, onkeydown: (e) => { if (e.key === 'Enter') self.setChord(e.target.value); } });
@@ -1324,9 +1352,10 @@ Object.assign(ScoreEditor.prototype, {
     C.play = btn('▶', 'Lecture / arrêt (Espace)', () => self.togglePlay(), 'se-primary se-icon');
     C.selAll = btn('Tout', 'Tout sélectionner', () => self.selectAll());
     C.selNone = btn('∅', 'Tout désélectionner', () => self.clearSelection(), 'se-icon');
+    C.clearM = btn('Vider mes.', 'Efface toute la mesure de la sélection', () => { const t = self._targets()[0]; if (t) self.clearMeasure(t.mi); });
     this.$root.append(
       h('div', { class: 'se-top' }, h('div', { class: 'se-tabs', role: 'tablist' }, C.tabs),
-        h('div', { class: 'se-quick' }, C.undo, C.redo, C.del, C.multi, C.confirmB, C.selAll, C.selNone, C.play)),
+        h('div', { class: 'se-quick' }, C.undo, C.redo, C.del, C.clearM, C.multi, C.confirmB, C.selAll, C.selNone, C.play)),
       writeP, chordP, voiceP, fileP);
   },
 
@@ -1358,6 +1387,8 @@ Object.assign(ScoreEditor.prototype, {
       });
       C.multi.setAttribute('aria-pressed', String(this.multi)); C.confirmB.setAttribute('aria-pressed', String(this.confirm));
       C.muteTog.setAttribute('aria-pressed', String(this.mute));
+      C.typeBtn.innerHTML = kindIcon(this.kind);
+      C.typeBtn.setAttribute('aria-pressed', String(this.kind !== 'note'));
       C.swatches.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.c === this.pick)));
       C.penBtn.style.background = this.pen || '';
       C.penBtn.classList.toggle('se-none', !this.pen);
