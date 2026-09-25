@@ -1,3 +1,22 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Éditeur de partition</title>
+<!-- Police optionnelle (sans elle, la police du système est utilisée) -->
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+</head>
+<body style="margin:0;padding:12px;background:#dfe5f2">
+
+<!-- ============ COPIEZ À PARTIR D'ICI pour l'intégrer dans une autre page ============ -->
+<div id="partition"></div>
+
+<!-- 1. abcjs (moteur de rendu) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/abcjs/6.5.2/abcjs-basic-min.js"></script>
+
+<!-- 2. L'éditeur (bibliothèque + interface + API), aucun autre fichier nécessaire -->
+<script data-score-editor>
 /*!
  * ScoreEditor 1.0 — petit éditeur de partition en notation ABC (rendu : abcjs)
  * Saisie tactile / souris sur la portée, accords, symboles d'accord, slash,
@@ -2073,3 +2092,23 @@ Object.assign(ScoreEditor.prototype, {
 
 return ScoreEditor;
 });
+
+</script>
+
+<!-- 3. Démarrage : modifiez les options ci-dessous -->
+<script>
+  var editeur = new ScoreEditor('#partition', {
+    clef: 'grand',        // 'treble' (Sol) | 'bass' (Fa) | 'grand' (grande portée)
+    measures: 4,          // nombre de mesures
+    meter: [4, 4],        // chiffrage
+    key: 'C',             // tonalité : 'C', 'G', 'Bb', 'Am'…
+    tempo: 80
+  });
+  // API : editeur.addNote({...}), editeur.getABC(), editeur.toSVG(), editeur.toJSON()…
+  // Sauvegarde automatique (optionnel) :
+  // editeur.on('change', function () { localStorage.setItem('partition', JSON.stringify(editeur.toJSON())); });
+</script>
+<!-- ============ JUSQU'ICI ============ -->
+
+</body>
+</html>
